@@ -47,7 +47,8 @@ const MAX_RISE: f64 = 0.25;
 /// Curves follow the base to within this (points) when the point budget allows: closer is invisible
 /// under a soft shadow, and every extra point is one more to adjust by hand.
 const FIT: f64 = 0.75;
-/// A base this much covered by things in front of the product (0–1) gets no shadow: out of sight.
+/// With several products selected, a base this much covered by things in front of its product
+/// (0–1) gets no shadow: out of sight. A product picked on its own always gets its shadow.
 const HIDDEN: f64 = 0.8;
 /// Bases narrower than this (points) get no shadow.
 const MIN_BASE: f64 = 6.0;
@@ -495,6 +496,8 @@ fn covered(base: &Base, front: &[u8]) -> f64 {
 
 fn add_product_shadow(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = super::targets(s, p)?;
+    // One product picked on its own is shadowed whatever stands in front of it.
+    let skip_hidden = ids.len() > 1;
     let max_points = match p.get("maxPoints") {
         None | Some(Value::Null) => POINTS,
         Some(v) => v
@@ -537,7 +540,7 @@ fn add_product_shadow(s: &mut Session, p: &Value) -> Result<Value> {
                     let found = bases(b, JUMP * ppt, MIN_BASE * ppt);
                     let top = d.top_level_of(frame).unwrap_or(frame);
                     let front = in_front(d, loc.spread, top)
-                        .filter(|k| !k.is_empty())
+                        .filter(|k| skip_hidden && !k.is_empty())
                         .and_then(|k| render_kept(s, loc.spread, k, view_of(xf, bounds, ppt), b.width, b.height));
                     match front {
                         Some((px, _, _)) => found.into_iter().filter(|b| covered(b, &px) < HIDDEN).collect(),
@@ -756,7 +759,13 @@ mod tests {
         // In front of it, lower down, covering its whole base.
         let front = s.execute("frame.create", &json!({"rect": [190, 210, 270, 260], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
         s.execute("object.fill", &json!({"ids": [front], "swatch": "[Black]"})).unwrap();
+        // Picked on its own, it gets its shadow (behind what covers it).
         let r = s.execute("object.addProductShadow", &json!({"ids": [back.0]})).unwrap();
+        assert_eq!(r["ids"].as_array().map(Vec::len), Some(1));
+        s.execute("edit.undo", &json!({})).unwrap();
+        // With other products selected too, its hidden base is skipped (the front one is no image:
+        // nothing to shadow there).
+        let r = s.execute("object.addProductShadow", &json!({"ids": [back.0, front]})).unwrap();
         assert_eq!(r["traced"], 1);
         assert_eq!(r["ids"].as_array().map(Vec::len), Some(0), "out of sight: no shadow, not a fallback bar");
     }
