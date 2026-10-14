@@ -50,6 +50,7 @@ mod print;
 mod qr;
 mod rulers;
 mod scripts;
+mod shadow;
 mod select;
 pub mod spelling;
 mod states;
@@ -175,6 +176,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(endnotes::specs());
         v.extend(editorial::specs());
         v.extend(object::specs());
+        v.extend(shadow::specs());
         v.extend(anchors::specs());
         v.extend(articles::specs());
         v.extend(paths::specs());
