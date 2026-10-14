@@ -264,7 +264,8 @@ fn fit_within(pts: &[Point], max: usize) -> Vec<Cubic> {
 
 /// The bases in `b`, one per product standing in it: the bottom edge splits where it jumps by more
 /// than `jump` pixels; in each piece, the stretch around its lowest point that rises no more than
-/// [`MAX_RISE`] of its width is the base (the rest climbs the product's sides). Pieces narrower than
+/// [`MAX_RISE`] of its width (plus `jump`, for the wobble of a real edge) is the base (the rest
+/// climbs the product's sides). Pieces narrower than
 /// `min` pixels are left out. Each comes back as a [`Base`] of the same rendering.
 pub(crate) fn bases(b: &Base, jump: f64, min: f64) -> Vec<Base> {
     let mut pieces: Vec<&[(u32, u32)]> = Vec::new();
@@ -286,7 +287,7 @@ pub(crate) fn bases(b: &Base, jump: f64, min: f64) -> Vec<Base> {
         let (mut a, mut z) = (at, at);
         loop {
             let width = (z - a + 1) as f64;
-            let ok = |k: usize| (piece[k].1 - low) as f64 <= MAX_RISE * (width + 1.0);
+            let ok = |k: usize| (piece[k].1 - low) as f64 <= MAX_RISE * (width + 1.0) + jump;
             let left = a > 0 && ok(a - 1);
             let right = z + 1 < piece.len() && ok(z + 1);
             if !left && !right {
@@ -631,6 +632,11 @@ mod tests {
         assert_eq!(found.len(), 2, "{found:?}");
         assert_eq!(found[0].contour.first().map(|c| c.0), Some(5), "the side is not part of the base");
         assert_eq!((found[1].contour.first().map(|c| c.0), found[1].bottom), (Some(60), 79), "the back product's own base");
+        // A flat base with a few pixels of wobble (a product cut off by its frame) is one base.
+        let noisy: Vec<(u32, u32)> = (0..200).map(|x| (x, [0, 1, 3, 2, 1][x as usize % 5])).collect();
+        let b = Base { width: 200, height: 100, bottom: 99, contour: noisy };
+        let found = bases(&b, 8.0, 25.0);
+        assert_eq!(found.iter().map(|b| b.contour.len()).collect::<Vec<_>>(), vec![200], "the whole width");
         // A sliver is too small for a shadow.
         let b = Base { width: 100, height: 100, bottom: 99, contour: (0..4).map(|x| (x, 0)).collect() };
         assert!(bases(&b, 3.0, 6.0).is_empty());
