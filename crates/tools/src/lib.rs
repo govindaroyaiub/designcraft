@@ -202,6 +202,15 @@ pub struct SnapRequest<'a> {
 }
 
 /// Read-only context a tool sees.
+/// Image pixels at most this opaque (of 255) are see-through for clicks.
+const TRANSPARENT: u8 = 16;
+
+/// Whether `p` (parent space) is within `tol` of `it`'s outline.
+fn near_outline(it: &designcraft_doc::Item, p: Point, tol: f64) -> bool {
+    let inner = it.xf.inverse() * p;
+    designcraft_geom::hit::distance_to_outline(&it.path.to_bezpath(), inner) <= tol + it.stroke.weight / 2.0
+}
+
 pub struct ToolContext<'a> {
     pub doc: &'a Document,
     pub selection: &'a Selection,
@@ -220,13 +229,50 @@ impl ToolContext<'_> {
         px / self.zoom.max(1e-9)
     }
 
-    /// Frontmost unlocked item under a canvas point.
+    /// Frontmost unlocked item under a canvas point. A placed image is hit where it shows: a click
+    /// on its transparent pixels (a cut-out product's corners) goes to what lies beneath, unless
+    /// it is selected (a selected frame can be dragged by any point inside it).
     pub fn hit(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
         let (sr, sp) = self.layout.spread_at(p)?;
         let SpreadRef::Doc(si) = sr else {
             return self.hit_parent(sr, sp);
         };
-        self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
+        let tol = self.tol(4.0);
+        let stack = self.doc.hit_items(si, sp, tol);
+        let solid = stack.iter().find(|id| {
+            self.selection.contains(**id) || self.doc.item(**id).is_none_or(|it| self.shows_at(it, sp, tol))
+        });
+        // Only transparent pixels under the pointer: the frontmost frame, as before.
+        solid.or(stack.first()).map(|id| (sr, *id))
+    }
+
+    /// Whether `it` shows at `p` (in its parent's space): an unfilled frame holding an image only
+    /// where the image has opaque pixels; anything else wherever it is hit.
+    fn shows_at(&self, it: &designcraft_doc::Item, p: Point, tol: f64) -> bool {
+        if let designcraft_doc::Content::Group { items } = &it.content
+            && it.shape == designcraft_doc::Shape::Group
+        {
+            let inner = it.xf.inverse() * p;
+            return items.iter().any(|c| designcraft_doc::edit_hit(c, inner, tol) && self.shows_at(c, inner, tol));
+        }
+        let Some(g) = it.graphic() else { return true };
+        if !it.fill.is_none() || it.stroke.weight > 0.0 && !it.stroke.is_none() && near_outline(it, p, tol) {
+            return true;
+        }
+        let Some(asset) = self.doc.assets.get(&g.asset) else { return true };
+        if asset.data.is_empty() || g.size.0 <= 0.0 || g.size.1 <= 0.0 || (it.xf * g.xf).determinant().abs() < 1e-12 {
+            return true;
+        }
+        // Frame space → graphic space (0,0)–size → image pixels.
+        let q = (it.xf * g.xf).inverse() * p;
+        if q.x < 0.0 || q.y < 0.0 || q.x >= g.size.0 || q.y >= g.size.1 {
+            return false;
+        }
+        // The renderer's decoded image (already decoded to draw it); unreadable counts as solid.
+        let Some(pm) = designcraft_render::images::decoded(&asset.data, asset.page) else { return true };
+        let (w, h) = (pm.width() as f64, pm.height() as f64);
+        let (x, y) = (((q.x / g.size.0) * w).floor().clamp(0.0, w - 1.0), ((q.y / g.size.1) * h).floor().clamp(0.0, h - 1.0));
+        pm.sample(x as u16, y as u16).a > TRANSPARENT
     }
 
     /// Every unlocked item under a canvas point on a document spread, frontmost first.

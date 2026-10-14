@@ -1135,6 +1135,7 @@ dependencies = [
  "designcraft-compose",
  "designcraft-doc",
  "designcraft-geom",
+ "designcraft-render",
  "serde",
  "serde_json",
 ]

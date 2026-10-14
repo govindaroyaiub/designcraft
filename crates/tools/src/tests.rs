@@ -1191,3 +1191,44 @@ fn cmd_click_selects_behind_and_cycles_back_to_the_front() {
     let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 200.0 + off.x, 200.0 + off.y));
     assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [front.0], "content": false}))]);
 }
+
+#[test]
+fn clicks_go_through_the_transparent_pixels_of_a_cut_out_image() {
+    // A box, and in front of it a cut-out image whose left half is transparent (an SVG: drawn
+    // through the renderer's decoder like any placed image).
+    let mut d = Document::new(&NewDocument::default());
+    let behind = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 300.0));
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><rect x="100" width="100" height="200" fill="#c33"/></svg>"##;
+    let asset = d.add_asset(designcraft_doc::Asset {
+        id: designcraft_doc::AssetId(0),
+        name: "cutout.svg".into(),
+        mime: "image/svg+xml".into(),
+        link: None,
+        data: Arc::new(svg.to_vec()),
+        pixels: None,
+        page: 0,
+    });
+    let cut = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 300.0));
+    if let Some(it) = d.item_mut(cut) {
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            asset,
+            size: (200.0, 200.0),
+            xf: designcraft_geom::Affine::translate((100.0, 100.0)),
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+        });
+    }
+    let c = Cache::new();
+    let l = CanvasLayout::new(&d, false);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let at = |x: f64, y: f64| Point::new(x + off.x, y + off.y);
+    let none = Selection::default();
+    let cx = ctx(&d, &none, &c, &l);
+    assert_eq!(cx.hit(at(150.0, 200.0)).map(|h| h.1), Some(behind), "through the transparent half");
+    assert_eq!(cx.hit(at(250.0, 200.0)).map(|h| h.1), Some(cut), "the visible half is the image");
+    // Selected, the image frame can be grabbed anywhere inside it (to drag it).
+    let sel = Selection::items(vec![cut]);
+    let cx = ctx(&d, &sel, &c, &l);
+    assert_eq!(cx.hit(at(150.0, 200.0)).map(|h| h.1), Some(cut));
+}

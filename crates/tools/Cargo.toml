@@ -13,5 +13,6 @@ designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
 designcraft-compose = { workspace = true }
+designcraft-render = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
