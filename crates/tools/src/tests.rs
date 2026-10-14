@@ -1159,3 +1159,35 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
     let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 120.0 + off.x, 130.0 + off.y));
     assert_eq!(a, vec![Action::Exec("object.matchAttributes".into(), serde_json::json!({"from": photo.0}))]);
 }
+
+#[test]
+fn cmd_click_selects_behind_and_cycles_back_to_the_front() {
+    // Three frames stacked at the same spot (as cut-out product photos overlap), back to front.
+    let mut d = Document::new(&NewDocument::default());
+    let back = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 300.0));
+    let middle = add_rect(&mut d, Rect::new(120.0, 120.0, 280.0, 280.0));
+    let front = add_rect(&mut d, Rect::new(140.0, 140.0, 260.0, 260.0));
+    let c = Cache::new();
+    let l = CanvasLayout::new(&d, false);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let mut t = create("selection");
+    let cmd_click = |t: &mut Box<dyn crate::Tool>, sel: &Selection| {
+        let cx = ctx(&d, sel, &c, &l);
+        let mut ev = PointerEvent::new(PointerKind::Down, 200.0 + off.x, 200.0 + off.y);
+        ev.mods = Mods { cmd: true, ..Default::default() };
+        let a = t.pointer(&cx, &ev);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 200.0 + off.x, 200.0 + off.y));
+        a
+    };
+    let set = |id: ItemId| vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [id.0]}))];
+    // Nothing selected: the one behind the frontmost.
+    assert_eq!(cmd_click(&mut t, &Selection::default()), set(middle));
+    // From the selected one, the next one down; past the back, the front again.
+    assert_eq!(cmd_click(&mut t, &Selection::items(vec![middle])), set(back));
+    assert_eq!(cmd_click(&mut t, &Selection::items(vec![back])), set(front));
+    // A plain click still takes the frontmost.
+    let none = Selection::default();
+    let cx = ctx(&d, &none, &c, &l);
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 200.0 + off.x, 200.0 + off.y));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [front.0], "content": false}))]);
+}

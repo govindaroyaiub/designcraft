@@ -534,6 +534,17 @@ impl Tool for SelectionTool {
                     self.drag = Drag::Pending { start: p, hit: true };
                     return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
                 }
+                // Cmd-click (Ctrl elsewhere): Select Behind. The object behind the selected one under
+                // the pointer, or behind the frontmost; past the backmost, the frontmost again.
+                if ev.mods.cmd && !ev.mods.shift && !self.direct {
+                    let stack = cx.hits(p);
+                    if stack.len() > 1 {
+                        let at = stack.iter().position(|(_, id)| cx.selection.contains(*id)).unwrap_or(0);
+                        let (_, id) = stack[(at + 1) % stack.len()];
+                        self.drag = Drag::Pending { start: p, hit: true };
+                        return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]}))];
+                    }
+                }
                 match cx.hit(p) {
                     Some((sr, id)) => {
                         let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };

@@ -229,6 +229,12 @@ impl ToolContext<'_> {
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
+    /// Every unlocked item under a canvas point on a document spread, frontmost first.
+    pub fn hits(&self, p: Point) -> Vec<(SpreadRef, ItemId)> {
+        let Some((SpreadRef::Doc(si), sp)) = self.layout.spread_at(p) else { return Vec::new() };
+        self.doc.hit_items(si, sp, self.tol(4.0)).into_iter().map(|id| (SpreadRef::Doc(si), id)).collect()
+    }
+
     /// The parent item showing (not yet overridden) on the document page under `p`:
     /// (absolute page, parent item).
     pub fn hit_parent_on_page(&self, p: Point) -> Option<(usize, ItemId)> {

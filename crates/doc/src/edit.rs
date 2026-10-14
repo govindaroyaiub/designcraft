@@ -508,19 +508,21 @@ impl Document {
     /// Hit test: the frontmost visible, unlocked-layer item on spread `si` containing `p` (spread space).
     /// Frames hit by area if they have a fill or are text/graphic frames; otherwise near the outline.
     pub fn hit_item(&self, si: usize, p: Point, tol: f64) -> Option<ItemId> {
-        let sp = self.spreads.get(si)?;
+        self.hit_items(si, p, tol).into_iter().next()
+    }
+
+    /// Every visible, unlocked-layer item on spread `si` containing `p` (spread space), frontmost
+    /// first (as [`Document::hit_item`] tests them): Select Behind steps down this stack.
+    pub fn hit_items(&self, si: usize, p: Point, tol: f64) -> Vec<ItemId> {
+        let Some(sp) = self.spreads.get(si) else { return Vec::new() };
         let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
         items.sort_by_key(|i| self.layer_rank(i.layer));
-        for it in items.into_iter().rev() {
-            let layer = self.layer(it.layer);
-            if it.hidden || layer.is_some_and(|l| !l.visible || l.locked) {
-                continue;
-            }
-            if item_hit(it, p, tol) {
-                return Some(it.id);
-            }
-        }
-        None
+        items
+            .into_iter()
+            .rev()
+            .filter(|it| !it.hidden && !self.layer(it.layer).is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol))
+            .map(|it| it.id)
+            .collect()
     }
 
     /// Every item id (pre-order) on document spreads.
