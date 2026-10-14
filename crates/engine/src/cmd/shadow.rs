@@ -383,6 +383,18 @@ fn clean_name(name: &str) -> &str {
     n
 }
 
+/// The tilt (radians, within ±45°) at which an image transformed by `img` stands on the page: its
+/// rotation less any whole quarter turns.
+fn standing_tilt(img: Affine) -> f64 {
+    let c = img.as_coeffs();
+    let theta = c[1].atan2(c[0]);
+    if !theta.is_finite() {
+        return 0.0;
+    }
+    let q = std::f64::consts::FRAC_PI_2;
+    theta - (theta / q).round() * q
+}
+
 /// The image frame `id` is or holds (the first one, depth first).
 fn graphic_frame(d: &Document, id: ItemId) -> Option<ItemId> {
     fn find(it: &Item) -> Option<ItemId> {
@@ -525,9 +537,12 @@ fn add_product_shadow(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(frame) = graphic_frame(d, *id) else { continue };
             let Some(loc) = d.find(frame) else { continue };
             let Some(it) = d.item_at(&loc) else { continue };
-            // Traced in the frame's own space: a rotated product's base is its own bottom edge.
-            let xf = d.parent_xf(&loc) * it.xf;
-            let bounds = it.inner_bounds();
+            // Traced upright as the product stands on the page: its image's rotation without whole
+            // quarter turns (a photo stored sideways and turned upright in the layout), so a
+            // product tilted with the layout keeps its tilt and its base is its page bottom.
+            let full = d.parent_xf(&loc) * it.xf;
+            let xf = Affine::rotate(standing_tilt(it.graphic().map_or(full, |g| full * g.xf)));
+            let bounds = (xf.inverse() * full).transform_rect_bbox(it.inner_bounds());
             if !(bounds.width() > 0.0 && bounds.height() > 0.0 && bounds.width().is_finite() && bounds.height().is_finite()) {
                 continue;
             }
@@ -745,6 +760,30 @@ mod tests {
         assert!((bottom - (ib.y1 + GAP)).abs() < 0.5, "{bottom} vs {}", ib.y1 + GAP);
         let lowest: Vec<&Point> = local.iter().filter(|p| (p.y - bottom).abs() < 0.01).collect();
         assert_eq!(lowest.len(), 2, "both bottom corners level in the product's space: {local:?}");
+    }
+
+    #[test]
+    fn a_photo_stored_sideways_gets_its_shadow_at_its_page_bottom() {
+        // The opaque part is a bar along the image's right edge; the frame is turned a quarter so
+        // the bar lies along the bottom or the top on the page. The shadow goes under the bar
+        // as it stands on the page, not along the image's own bottom (a side on the page).
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect x="60" width="20" height="80" fill="#c33"/></svg>"##;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let placed = s.execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": 200, "y": 200})).unwrap();
+        let id = ItemId(placed["id"].as_u64().unwrap());
+        s.execute("transform.rotate", &json!({"angle": 90, "ids": [id.0]})).unwrap();
+        let r = s.execute("object.addProductShadow", &json!({"ids": [id.0]})).unwrap();
+        assert_eq!(r["traced"], 1);
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(id).unwrap();
+        let g = it.graphic().unwrap();
+        // The bar on the page (60..80 × 0..80 in the image, 0.75 pt per pixel).
+        let bar = (it.xf * g.xf).transform_rect_bbox(Rect::new(45.0, 0.0, 60.0, 60.0));
+        let shadow = d.item(ItemId(r["ids"][0].as_u64().unwrap())).unwrap().bounds();
+        assert!(bar.width() > bar.height(), "the bar lies flat on the page: {bar:?}");
+        assert!((shadow.y1 - (bar.y1 + GAP)).abs() < 0.5, "under the bar: {shadow:?} {bar:?}");
+        assert!((shadow.width() - (bar.width() - 2.0 * INSET)).abs() < 1.0, "as wide as the bar: {shadow:?} {bar:?}");
     }
 
     #[test]
