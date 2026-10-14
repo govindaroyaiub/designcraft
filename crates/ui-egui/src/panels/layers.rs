@@ -13,7 +13,8 @@ const ROW_H: f32 = 24.0;
 /// Width of the eye and lock columns.
 const COL_W: f32 = 22.0;
 
-/// Display name of an item: its own name, the first words of a text frame's story, or the kind.
+/// Display name of an item: its own name, the first words of a text frame's story, the file a
+/// graphic frame shows (as InDesign lists placed images), or the kind.
 pub fn item_label(doc: &Document, it: &Item) -> String {
     if !it.name.is_empty() {
         return it.name.clone();
@@ -40,6 +41,9 @@ pub fn item_label(doc: &Document, it: &Item) -> String {
             let ell = if short.chars().count() < words.chars().count() { "…" } else { "" };
             return format!("<{short}{ell}>");
         }
+    }
+    if let Some(name) = it.graphic().and_then(|g| doc.assets.get(&g.asset)).map(|a| a.name.trim()).filter(|n| !n.is_empty()) {
+        return format!("<{name}>");
     }
     it.default_label().to_string()
 }
@@ -111,6 +115,15 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     let active = st.active_layer;
     let selected: Vec<ItemId> = st.selection.items.clone();
     let sel_layers: Vec<_> = selected.iter().filter_map(|i| doc.item(*i).map(|it| it.layer)).collect();
+    // The rows stand for top-level objects: an object selected inside a group shows as its group.
+    let shown: Vec<ItemId> = selected.iter().map(|i| doc.top_level_of(*i).unwrap_or(*i)).collect();
+    // A new selection (made on the canvas or anywhere else) is revealed: its layer opens and its row
+    // scrolls into view, once, so the panel can still be scrolled and closed freely afterwards.
+    let last_id = egui::Id::new("layers_revealed_selection");
+    let now: Vec<u64> = shown.iter().map(|i| i.0).collect();
+    let reveal = !now.is_empty() && ui.data(|d| d.get_temp::<Vec<u64>>(last_id)).as_ref() != Some(&now);
+    ui.data_mut(|d| d.insert_temp(last_id, now));
+    let mut scrolled = false;
     // Objects on the current spread, topmost first.
     let cur = crate::canvas::current_page(app).unwrap_or(0);
     let spread_items: Vec<std::sync::Arc<Item>> =
@@ -118,7 +131,11 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     ui.spacing_mut().item_spacing.y = 0.0;
     for l in doc.layers.iter().rev() {
         let open_id = egui::Id::new(("layer_open", l.id.0));
-        let open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or(l.id == active);
+        let mut open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or(l.id == active);
+        if reveal && sel_layers.contains(&l.id) && !open {
+            open = true;
+            ui.data_mut(|d| d.insert_temp(open_id, true));
+        }
         let lc = c32(l.color);
         let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
         if l.id == active {
@@ -201,8 +218,14 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         }
         for it in spread_items.iter().filter(|i| i.layer == l.id) {
             let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
-            let is_sel = selected.contains(&it.id);
-            if resp.hovered() {
+            let is_sel = shown.contains(&it.id);
+            if is_sel {
+                ui.painter().rect_filled(row, 0.0, t.row_selected);
+                if reveal && !scrolled {
+                    resp.scroll_to_me(Some(egui::Align::Center));
+                    scrolled = true;
+                }
+            } else if resp.hovered() {
                 ui.painter().rect_filled(row, 0.0, t.hover);
             }
             let (eye, lock) = eye_lock(ui, &app.ui.language, row, !it.hidden, it.locked, !l.visible, ("item", it.id.0));
@@ -266,5 +289,28 @@ mod tests {
         assert_eq!(item_label(doc, tf), "<Every page begins as an…>");
         let rr = doc.item(ItemId(rect["id"].as_u64().unwrap())).unwrap();
         assert_eq!(item_label(doc, rr), "<rectangle>");
+    }
+
+    #[test]
+    fn selecting_an_object_opens_its_layer_in_the_panel() {
+        use egui_kittest::Harness;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let first = app.session.active().unwrap().doc.item(ItemId(id)).unwrap().layer;
+        // A new layer becomes the active one: the first layer's row starts closed.
+        app.run("layer.new", json!({})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(260.0, 400.0)).build_ui_state(|ui, app: &mut DesignApp| show(app, ui), app);
+        h.run_steps(2);
+        let open = |h: &Harness<'_, DesignApp>| h.ctx.data(|d| d.get_temp::<bool>(egui::Id::new(("layer_open", first.0)))).unwrap_or(false);
+        assert!(!open(&h), "closed while nothing on it is selected");
+        h.state_mut().run("selection.set", json!({"ids": [id]})).unwrap();
+        h.run_steps(2);
+        assert!(open(&h), "selecting the object opens its layer");
+        // Closed again by hand, it stays closed while the selection stays the same.
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("layer_open", first.0)), false));
+        h.run_steps(2);
+        assert!(!open(&h));
     }
 }
