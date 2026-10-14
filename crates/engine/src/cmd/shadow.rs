@@ -359,8 +359,27 @@ fn shadow_name(d: &Document, frame: ItemId) -> String {
     let Some(it) = d.item(frame) else { return "Product_shadow".into() };
     let file = it.graphic().and_then(|g| d.assets.get(&g.asset)).map(|a| a.name.as_str()).unwrap_or("");
     let stem = std::path::Path::new(file).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let name = [it.name.trim(), stem.trim()].into_iter().find(|n| !n.is_empty()).unwrap_or("Product");
+    let name = [clean_name(&it.name), stem.trim()].into_iter().find(|n| !n.is_empty()).unwrap_or("Product");
     format!("{name}_shadow")
+}
+
+/// A frame name as a shadow name: without a short label prefix such as `rl:` (as production
+/// tools name frames after their image) or the image file's extension.
+fn clean_name(name: &str) -> &str {
+    let mut n = name.trim();
+    if let Some((prefix, rest)) = n.split_once(':')
+        && prefix.len() <= 4
+        && prefix.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        n = rest.trim();
+    }
+    const EXTENSIONS: [&str; 10] = [".psd", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".ai", ".pdf", ".eps", ".svg"];
+    for ext in EXTENSIONS {
+        if n.len() > ext.len() && n.to_ascii_lowercase().ends_with(ext) {
+            return &n[..n.len() - ext.len()];
+        }
+    }
+    n
 }
 
 /// The image frame `id` is or holds (the first one, depth first).
@@ -640,6 +659,15 @@ mod tests {
         // A sliver is too small for a shadow.
         let b = Base { width: 100, height: 100, bottom: 99, contour: (0..4).map(|x| (x, 0)).collect() };
         assert!(bases(&b, 3.0, 6.0).is_empty());
+    }
+
+    #[test]
+    fn shadow_names_drop_label_prefixes_and_extensions() {
+        assert_eq!(clean_name("rl:FKZRWGYXE3J.psd"), "FKZRWGYXE3J");
+        assert_eq!(clean_name("Hero bottle"), "Hero bottle");
+        assert_eq!(clean_name("Bottle.PNG"), "Bottle");
+        assert_eq!(clean_name("Note: keep"), "keep");
+        assert_eq!(clean_name("A long label: kept"), "A long label: kept", "only a short prefix is a label");
     }
 
     #[test]
