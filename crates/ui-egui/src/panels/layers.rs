@@ -115,15 +115,21 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     let active = st.active_layer;
     let selected: Vec<ItemId> = st.selection.items.clone();
     let sel_layers: Vec<_> = selected.iter().filter_map(|i| doc.item(*i).map(|it| it.layer)).collect();
-    // The rows stand for top-level objects: an object selected inside a group shows as its group.
-    let shown: Vec<ItemId> = selected.iter().map(|i| doc.top_level_of(*i).unwrap_or(*i)).collect();
     // A new selection (made on the canvas or anywhere else) is revealed: its layer opens and its row
     // scrolls into view, once, so the panel can still be scrolled and closed freely afterwards.
     let last_id = egui::Id::new("layers_revealed_selection");
-    let now: Vec<u64> = shown.iter().map(|i| i.0).collect();
+    let now: Vec<u64> = selected.iter().map(|i| i.0).collect();
     let reveal = !now.is_empty() && ui.data(|d| d.get_temp::<Vec<u64>>(last_id)).as_ref() != Some(&now);
     ui.data_mut(|d| d.insert_temp(last_id, now));
     let mut scrolled = false;
+    // Groups holding a selected object open with it (once, as its layer does).
+    if reveal {
+        for id in &selected {
+            for a in ancestors(&doc, *id) {
+                ui.data_mut(|d| d.insert_temp(egui::Id::new(("item_open", a.0)), true));
+            }
+        }
+    }
     // Objects on the current spread, topmost first.
     let cur = crate::canvas::current_page(app).unwrap_or(0);
     let spread_items: Vec<std::sync::Arc<Item>> =
@@ -216,9 +222,22 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         if !open {
             continue;
         }
+        // Objects topmost first; a group's or frame's contents under it, indented, when it is open.
+        let mut rows: Vec<(std::sync::Arc<Item>, usize)> = Vec::new();
+        fn push(ui: &Ui, it: &std::sync::Arc<Item>, depth: usize, rows: &mut Vec<(std::sync::Arc<Item>, usize)>) {
+            rows.push((it.clone(), depth));
+            if !it.children().is_empty() && depth < 32 && ui.data(|d| d.get_temp::<bool>(egui::Id::new(("item_open", it.id.0)))).unwrap_or(false) {
+                for c in it.children().iter().rev() {
+                    push(ui, c, depth + 1, rows);
+                }
+            }
+        }
         for it in spread_items.iter().filter(|i| i.layer == l.id) {
+            push(ui, it, 0, &mut rows);
+        }
+        for (it, depth) in rows {
             let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
-            let is_sel = shown.contains(&it.id);
+            let is_sel = selected.contains(&it.id);
             if is_sel {
                 ui.painter().rect_filled(row, 0.0, t.row_selected);
                 if reveal && !scrolled {
@@ -229,17 +248,37 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
                 ui.painter().rect_filled(row, 0.0, t.hover);
             }
             let (eye, lock) = eye_lock(ui, &app.ui.language, row, !it.hidden, it.locked, !l.visible, ("item", it.id.0));
-            let name = item_label(&doc, it);
+            let indent = 14.0 * depth as f32;
+            // Disclosure triangle for a group or a frame with pasted-in contents.
+            let mut tri_clicked = false;
+            if !it.children().is_empty() {
+                let open_id = egui::Id::new(("item_open", it.id.0));
+                let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+                let tri = Rect::from_min_size(row.min + vec2(2.0 * COL_W + 16.0 + indent, 0.0), vec2(14.0, ROW_H));
+                let c = tri.center();
+                let pts = if open {
+                    vec![c + vec2(-4.0, -2.0), c + vec2(4.0, -2.0), c + vec2(0.0, 3.0)]
+                } else {
+                    vec![c + vec2(-2.0, -4.0), c + vec2(3.0, 0.0), c + vec2(-2.0, 4.0)]
+                };
+                ui.painter().add(egui::Shape::convex_polygon(pts, t.icon, Stroke::NONE));
+                if ui.interact(tri, ui.id().with(("item_tri", it.id.0)), Sense::click()).clicked() {
+                    ui.data_mut(|d| d.insert_temp(open_id, !open));
+                    tri_clicked = true;
+                }
+            }
+            let name = item_label(&doc, &it);
             let clip = Rect::from_min_max(row.min, pos2(row.max.x - 26.0, row.max.y));
             ui.painter().with_clip_rect(clip).text(
-                row.min + vec2(2.0 * COL_W + 30.0, ROW_H / 2.0),
+                row.min + vec2(2.0 * COL_W + 30.0 + indent, ROW_H / 2.0),
                 egui::Align2::LEFT_CENTER,
                 &name,
                 egui::FontId::proportional(11.0),
                 if it.hidden { t.text_dim } else { t.text },
             );
             let sq = selection_square(ui, &app.ui.language, row, lc, is_sel, true, ("item", it.id.0));
-            if eye {
+            if tri_clicked {
+            } else if eye {
                 let _ = app.run("object.setFlags", json!({"ids": [it.id.0], "hidden": !it.hidden}));
             } else if lock {
                 let _ = app.run("object.setFlags", json!({"ids": [it.id.0], "locked": !it.locked}));
@@ -271,6 +310,20 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             }
         });
     });
+}
+
+/// The groups (and frames with pasted-in contents) holding `id`, outermost first.
+fn ancestors(doc: &Document, id: ItemId) -> Vec<ItemId> {
+    let Some(loc) = doc.find(id) else { return Vec::new() };
+    let Some(sp) = doc.spread(loc.spread) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut items: &[std::sync::Arc<Item>] = &sp.items;
+    for &i in loc.path.iter().take(loc.path.len().saturating_sub(1)) {
+        let Some(it) = items.get(i) else { break };
+        out.push(it.id);
+        items = it.children();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -312,5 +365,25 @@ mod tests {
         h.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("layer_open", first.0)), false));
         h.run_steps(2);
         assert!(!open(&h));
+    }
+
+    #[test]
+    fn groups_open_to_show_a_selected_object_inside_them() {
+        use egui_kittest::Harness;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [220, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        let g = app.run("object.group", json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(260.0, 400.0)).build_ui_state(|ui, app: &mut DesignApp| show(app, ui), app);
+        h.run_steps(2);
+        let open = |h: &Harness<'_, DesignApp>| h.ctx.data(|d| d.get_temp::<bool>(egui::Id::new(("item_open", g)))).unwrap_or(false);
+        assert!(!open(&h), "groups start closed");
+        // An object inside the group selected (Direct Selection, or a click through a cut-out).
+        h.state_mut().run("selection.set", json!({"ids": [b]})).unwrap();
+        h.run_steps(2);
+        assert!(open(&h), "its group opens");
+        assert_eq!(ancestors(&h.state().session.active().unwrap().doc, ItemId(b)), vec![ItemId(g)]);
     }
 }
