@@ -93,6 +93,7 @@ impl Session {
             layer,
             snap: view.snap,
             unit: view.unit,
+            select_through_transparency: self.prefs.select_through_transparency,
         };
         Some(f(self.tool.as_mut(), &cx))
     }

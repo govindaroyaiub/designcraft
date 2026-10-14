@@ -165,6 +165,9 @@ pub struct Prefs {
     pub scale_strokes: bool,
     /// X/Y/W/H in the Control and Properties panels measure the stroke's outer edge.
     pub dimensions_include_stroke: bool,
+    /// Preferences › General › Select Through Transparent Image Areas: a click on a placed image's
+    /// transparent pixels (a cut-out photo's background) selects what lies beneath.
+    pub select_through_transparency: bool,
     /// Preferences › General › Transformations are Totals: rotation, shear and scale of nested
     /// objects (a graphic in a frame, objects in groups) are measured on the pasteboard rather
     /// than relative to their container.
@@ -233,6 +236,7 @@ impl Default for Prefs {
             star_inset: 0.0,
             scale_strokes: true,
             dimensions_include_stroke: true,
+            select_through_transparency: false,
             transformations_are_totals: true,
             absolute_page_numbers: false,
             highlight_hj: false,

@@ -222,6 +222,8 @@ pub struct ToolContext<'a> {
     pub layer: designcraft_doc::LayerId,
     pub snap: SnapView,
     pub unit: Unit,
+    /// Clicks on a placed image's transparent pixels go to what lies beneath (a preference).
+    pub select_through_transparency: bool,
 }
 
 impl ToolContext<'_> {
@@ -229,19 +231,21 @@ impl ToolContext<'_> {
         px / self.zoom.max(1e-9)
     }
 
-    /// Frontmost unlocked item under a canvas point. A placed image is hit where it shows: a click
-    /// on its transparent pixels (a cut-out product's corners) goes to what lies beneath, unless
-    /// it is selected (a selected frame can be dragged by any point inside it).
+    /// Frontmost unlocked item under a canvas point. With Select Through Transparent Image Areas on,
+    /// a placed image is hit where it shows: a click on its transparent pixels (a cut-out
+    /// product's corners) goes to what lies beneath, unless it is selected (a selected frame can be
+    /// dragged by any point inside it).
     pub fn hit(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
         let (sr, sp) = self.layout.spread_at(p)?;
         let SpreadRef::Doc(si) = sr else {
             return self.hit_parent(sr, sp);
         };
         let tol = self.tol(4.0);
+        if !self.select_through_transparency {
+            return self.doc.hit_item(si, sp, tol).map(|id| (sr, id));
+        }
         let stack = self.doc.hit_items(si, sp, tol);
-        let solid = stack.iter().find(|id| {
-            self.selection.contains(**id) || self.doc.item(**id).is_none_or(|it| self.shows_at(it, sp, tol))
-        });
+        let solid = stack.iter().find(|id| self.selection.contains(**id) || self.doc.item(**id).is_none_or(|it| self.shows_at(it, sp, tol)));
         // Only transparent pixels under the pointer: the frontmost frame, as before.
         solid.or(stack.first()).map(|id| (sr, *id))
     }

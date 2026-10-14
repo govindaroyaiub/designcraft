@@ -9,7 +9,17 @@ use designcraft_geom::{Point, Rect, Unit};
 use super::*;
 
 fn ctx<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout) -> ToolContext<'a> {
-    ToolContext { doc: d, selection: s, cache: c, layout: l, zoom: 1.0, layer: d.default_layer(), snap: SnapView::OFF, unit: Unit::Points }
+    ToolContext {
+        doc: d,
+        selection: s,
+        cache: c,
+        layout: l,
+        zoom: 1.0,
+        layer: d.default_layer(),
+        snap: SnapView::OFF,
+        unit: Unit::Points,
+        select_through_transparency: false,
+    }
 }
 
 #[test]
@@ -1224,11 +1234,13 @@ fn clicks_go_through_the_transparent_pixels_of_a_cut_out_image() {
     let off = l.xf(SpreadRef::Doc(0)).translation();
     let at = |x: f64, y: f64| Point::new(x + off.x, y + off.y);
     let none = Selection::default();
-    let cx = ctx(&d, &none, &c, &l);
+    // Off (the default), the frontmost frame is hit anywhere inside it.
+    assert_eq!(ctx(&d, &none, &c, &l).hit(at(150.0, 200.0)).map(|h| h.1), Some(cut));
+    let cx = ToolContext { select_through_transparency: true, ..ctx(&d, &none, &c, &l) };
     assert_eq!(cx.hit(at(150.0, 200.0)).map(|h| h.1), Some(behind), "through the transparent half");
     assert_eq!(cx.hit(at(250.0, 200.0)).map(|h| h.1), Some(cut), "the visible half is the image");
     // Selected, the image frame can be grabbed anywhere inside it (to drag it).
     let sel = Selection::items(vec![cut]);
-    let cx = ctx(&d, &sel, &c, &l);
+    let cx = ToolContext { select_through_transparency: true, ..ctx(&d, &sel, &c, &l) };
     assert_eq!(cx.hit(at(150.0, 200.0)).map(|h| h.1), Some(cut));
 }
