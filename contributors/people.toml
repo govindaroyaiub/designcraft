@@ -30,3 +30,6 @@ sync_github_name = true
 
 [people.thaynej]
 real_name = "Jeffrey Thayne"
+
+[people.govindaroyaiub]
+sync_github_name = true
