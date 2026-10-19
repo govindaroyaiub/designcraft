@@ -2179,12 +2179,14 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
         }
         return ContextMenu::Text;
     }
-    // On a product: the frontmost image under the pointer, even behind price tags or panels.
-    let hit = image_at(app, p, zoom).or(hit);
+    // On a product: the image frame under the pointer itself, even behind price tags or panels
+    // and inside a group or a frame holding several products.
+    let image = image_at(app, p, zoom);
+    let hit = image.or(hit);
     let Some((id, _)) = hit else { return ContextMenu::Canvas };
     let direct = app.session.tool_id() == "directSelection";
     let Some((target, selected)) = app.session.active().map(|st| {
-        let target = if direct { id } else { st.doc.top_level_of(id).unwrap_or(id) };
+        let target = if direct || image.is_some() { id } else { st.doc.top_level_of(id).unwrap_or(id) };
         (target, st.selection.contains(target))
     }) else {
         return ContextMenu::Canvas;
@@ -2200,8 +2202,21 @@ pub(crate) fn holds_image(it: &Item) -> bool {
     matches!(it.content, designcraft_doc::Content::Graphic(_)) || it.children().iter().any(|c| holds_image(c))
 }
 
-/// The frontmost visible, unlocked top-level item holding an image under canvas point `p` on a
-/// document spread.
+/// The image frame under `p` (in `it`'s parent space) inside `it`, frontmost first: `it` itself,
+/// or one in the groups and frames with pasted-in contents it holds.
+fn image_in(it: &Item, p: Point, tol: f64) -> Option<designcraft_doc::ItemId> {
+    if !designcraft_doc::edit_hit(it, p, tol) {
+        return None;
+    }
+    if matches!(it.content, designcraft_doc::Content::Graphic(_)) {
+        return Some(it.id);
+    }
+    let inner = it.xf.inverse() * p;
+    it.children().iter().rev().find_map(|c| image_in(c, inner, tol))
+}
+
+/// The frontmost visible, unlocked image frame under canvas point `p` on a document spread, at
+/// any depth (a product photo in a group or pasted into a frame with others).
 fn image_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::ItemId, Point)> {
     let st = app.session.active()?;
     let (sr, sp) = CanvasLayout::new(&st.doc, st.editing_parents).spread_at(p)?;
@@ -2214,8 +2229,8 @@ fn image_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::It
         .into_iter()
         .rev()
         .filter(|it| !it.hidden && !doc.layer(it.layer).is_some_and(|l| !l.visible || l.locked))
-        .find(|it| holds_image(it) && designcraft_doc::edit_hit(it, sp, tol))
-        .map(|it| (it.id, sp))
+        .find_map(|it| image_in(it, sp, tol))
+        .map(|id| (id, sp))
 }
 
 /// The frontmost item under canvas point `p` and that point in its spread, hit as the tools do.
