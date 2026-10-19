@@ -21,7 +21,8 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_selection};
 use crate::{Result, Session};
 
-/// The object style every shadow gets (created on first use: Paper fill, no stroke).
+/// The object style every shadow gets (created on first use: Paper fill, no stroke and the soft
+/// drop shadow, so editing the style restyles every shadow).
 pub const STYLE: &str = "Product Shadow";
 
 /// Points on a shadow, by default and at most (`maxPoints`).
@@ -208,7 +209,12 @@ fn fit_curve(pts: &[Point], tol: f64) -> Vec<Cubic> {
         let seg = &pts[a..=b];
         if seg.len() <= 2 {
             let d = seg[0].distance(seg[seg.len() - 1]) / 3.0;
-            out.push([seg[0], Point::new(seg[0].x + t0.0 * d, seg[0].y + t0.1 * d), Point::new(seg[seg.len() - 1].x + t1.0 * d, seg[seg.len() - 1].y + t1.1 * d), seg[seg.len() - 1]]);
+            out.push([
+                seg[0],
+                Point::new(seg[0].x + t0.0 * d, seg[0].y + t0.1 * d),
+                Point::new(seg[seg.len() - 1].x + t1.0 * d, seg[seg.len() - 1].y + t1.1 * d),
+                seg[seg.len() - 1],
+            ]);
             continue;
         }
         // Chord-length parameters.
@@ -219,7 +225,8 @@ fn fit_curve(pts: &[Point], tol: f64) -> Vec<Cubic> {
         let total = u[seg.len() - 1].max(1e-12);
         u.iter_mut().for_each(|v| *v /= total);
         let c = fit_one(seg, &u, t0, t1);
-        let (worst, err) = seg.iter().zip(&u).enumerate().map(|(k, (p, t))| (k, bez(&c, *t).distance(*p))).fold((0, 0.0), |m, x| if x.1 > m.1 { x } else { m });
+        let (worst, err) =
+            seg.iter().zip(&u).enumerate().map(|(k, (p, t))| (k, bez(&c, *t).distance(*p))).fold((0, 0.0), |m, x| if x.1 > m.1 { x } else { m });
         if err <= tol || b - a < 3 {
             out.push(c);
             continue;
@@ -272,9 +279,8 @@ pub(crate) fn bases(b: &Base, jump: f64, min: f64) -> Vec<Base> {
     let mut pieces: Vec<&[(u32, u32)]> = Vec::new();
     let mut start = 0;
     for k in 1..=b.contour.len() {
-        let breaks = k == b.contour.len()
-            || (b.contour[k].1 as f64 - b.contour[k - 1].1 as f64).abs() > jump
-            || b.contour[k].0 != b.contour[k - 1].0 + 1;
+        let breaks =
+            k == b.contour.len() || (b.contour[k].1 as f64 - b.contour[k - 1].1 as f64).abs() > jump || b.contour[k].0 != b.contour[k - 1].0 + 1;
         if breaks {
             pieces.push(&b.contour[start..k]);
             start = k;
@@ -393,6 +399,15 @@ fn standing_tilt(img: Affine) -> f64 {
     }
     let q = std::f64::consts::FRAC_PI_2;
     theta - (theta / q).round() * q
+}
+
+/// The shadow's effects: a soft drop shadow straight down (black, 55 %, 2.83 pt away, 3.4 pt soft).
+fn shadow_effects() -> designcraft_doc::Effects {
+    let mut e = designcraft_doc::Effects::default();
+    let ds = &mut e.drop_shadow;
+    (ds.on, ds.opacity, ds.angle, ds.global_light) = (true, 0.55, 90.0, false);
+    (ds.distance, ds.size, ds.spread) = (2.834645669291339, 3.401574803149606, 0.0);
+    e
 }
 
 /// The image frame `id` is or holds (the first one, depth first).
@@ -580,6 +595,7 @@ fn add_product_shadow(s: &mut Session, p: &Value) -> Result<Value> {
                 stroke: Some(Stroke::none()),
                 paragraph_style: None,
                 text_frame: None,
+                effects: Some(shadow_effects()),
             });
         }
         let mut made = Vec::new();
@@ -602,9 +618,8 @@ fn add_product_shadow(s: &mut Session, p: &Value) -> Result<Value> {
                 it.fill = Fill::swatch(designcraft_color::swatch::PAPER);
                 it.stroke = Stroke::none();
                 it.blend = BlendMode::Multiply;
-                let ds = &mut it.effects.drop_shadow;
-                (ds.on, ds.opacity, ds.angle, ds.global_light) = (true, 0.55, 90.0, false);
-                (ds.distance, ds.size, ds.spread) = (2.834645669291339, 3.401574803149606, 0.0);
+                // The style's effects (an existing style's, as the user may have changed them).
+                it.effects = d.styles.object_style(STYLE).and_then(|os| os.effects.clone()).unwrap_or_else(shadow_effects);
                 // Behind the product, in its spread.
                 let at = d.find(plan.top).map(|l| l.top()).unwrap_or(loc.top());
                 made.push(d.insert_item(loc.spread, it, Some(at))?);
@@ -742,10 +757,13 @@ mod tests {
     #[test]
     fn a_rotated_product_gets_its_shadow_on_its_own_base() {
         // The flyers this is for tilt their products about 10°: the shadow turns with the product.
-        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect x="10" y="20" width="60" height="20" fill="#c33"/></svg>"##;
+        let svg =
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect x="10" y="20" width="60" height="20" fill="#c33"/></svg>"##;
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
-        let placed = s.execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": 200, "y": 200})).unwrap();
+        let placed = s
+            .execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": 200, "y": 200}))
+            .unwrap();
         let id = ItemId(placed["id"].as_u64().unwrap());
         s.execute("transform.rotate", &json!({"angle": 10, "ids": [id.0]})).unwrap();
         let r = s.execute("object.addProductShadow", &json!({"ids": [id.0]})).unwrap();
@@ -770,7 +788,9 @@ mod tests {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect x="60" width="20" height="80" fill="#c33"/></svg>"##;
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
-        let placed = s.execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": 200, "y": 200})).unwrap();
+        let placed = s
+            .execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": 200, "y": 200}))
+            .unwrap();
         let id = ItemId(placed["id"].as_u64().unwrap());
         s.execute("transform.rotate", &json!({"angle": 90, "ids": [id.0]})).unwrap();
         let r = s.execute("object.addProductShadow", &json!({"ids": [id.0]})).unwrap();
@@ -788,9 +808,15 @@ mod tests {
 
     #[test]
     fn a_base_hidden_by_a_product_in_front_gets_no_shadow() {
-        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect x="10" y="20" width="60" height="20" fill="#c33"/></svg>"##;
+        let svg =
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect x="10" y="20" width="60" height="20" fill="#c33"/></svg>"##;
         let place = |s: &mut Session, x: f64, y: f64| {
-            ItemId(s.execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": x, "y": y})).unwrap()["id"].as_u64().unwrap())
+            ItemId(
+                s.execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": x, "y": y}))
+                    .unwrap()["id"]
+                    .as_u64()
+                    .unwrap(),
+            )
         };
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -812,10 +838,13 @@ mod tests {
     #[test]
     fn adds_a_traced_shadow_behind_a_placed_image() {
         // A product whose upper half is transparent: only the lower bar is opaque.
-        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect x="10" y="20" width="60" height="20" fill="#c33"/></svg>"##;
+        let svg =
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect x="10" y="20" width="60" height="20" fill="#c33"/></svg>"##;
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
-        let placed = s.execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": 100, "y": 100})).unwrap();
+        let placed = s
+            .execute("file.place", &json!({"base64": super::super::file::base64_encode(svg.as_bytes()), "name": "p.svg", "x": 100, "y": 100}))
+            .unwrap();
         let id = ItemId(placed["id"].as_u64().unwrap());
         let r = s.execute("object.addProductShadow", &json!({"ids": [id.0]})).unwrap();
         assert_eq!(r["traced"], 1);
@@ -831,7 +860,9 @@ mod tests {
         assert_eq!(it.name, "p_shadow", "named after the product's file");
         assert_eq!((it.object_style.as_str(), it.blend), (STYLE, BlendMode::Multiply));
         assert!(it.effects.drop_shadow.on);
-        assert!(d.styles.object_style(STYLE).is_some());
+        let style = d.styles.object_style(STYLE).unwrap();
+        assert!(style.effects.as_ref().is_some_and(|e| e.drop_shadow.on && e.drop_shadow.opacity == 0.55), "the style holds the drop shadow");
+        assert_eq!(it.effects, style.effects.clone().unwrap(), "the shadow follows its style");
         assert!((shadow.y1 - (frame.y1 + GAP)).abs() < 0.5, "on the product's base: {shadow:?} {frame:?}");
         // Traced, not the fallback bar: as wide as the opaque bar (60 of 80), not 95 % of the frame.
         let w = frame.width() * 60.0 / 80.0 - 2.0 * INSET;

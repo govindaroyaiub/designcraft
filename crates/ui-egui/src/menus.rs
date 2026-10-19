@@ -2804,11 +2804,20 @@ const CONTEXT_PATH: &str = "Context";
 fn context_entries(app: &DesignApp, kind: ContextMenu) -> Vec<&'static str> {
     match kind {
         ContextMenu::Object => {
-            let (graphic, text) = app.session.active().map_or((false, false), |st| {
+            let (graphic, text, image) = app.session.active().map_or((false, false, false), |st| {
                 let items = || st.selection.items.iter().filter_map(|i| st.doc.item(*i));
-                (items().any(|it| matches!(it.content, designcraft_doc::Content::Graphic(_))), items().any(|it| it.is_text_frame()))
+                (
+                    items().any(|it| matches!(it.content, designcraft_doc::Content::Graphic(_))),
+                    items().any(|it| it.is_text_frame()),
+                    items().any(crate::canvas::holds_image),
+                )
             });
-            let mut v = CONTEXT_OBJECT.to_vec();
+            let mut v = Vec::new();
+            // Product photos (or groups holding one): their shadow first.
+            if image {
+                v.extend(["cmd:object.addProductShadow", "-"]);
+            }
+            v.extend(CONTEXT_OBJECT);
             if graphic {
                 v.extend(CONTEXT_GRAPHIC_FRAME);
             }

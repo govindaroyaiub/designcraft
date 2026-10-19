@@ -2179,6 +2179,8 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
         }
         return ContextMenu::Text;
     }
+    // On a product: the frontmost image under the pointer, even behind price tags or panels.
+    let hit = image_at(app, p, zoom).or(hit);
     let Some((id, _)) = hit else { return ContextMenu::Canvas };
     let direct = app.session.tool_id() == "directSelection";
     let Some((target, selected)) = app.session.active().map(|st| {
@@ -2191,6 +2193,29 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
         let _ = app.run("selection.set", json!({"ids": [target.0], "content": direct}));
     }
     ContextMenu::Object
+}
+
+/// Whether `it` is an image frame or holds one (a group with a product photo).
+pub(crate) fn holds_image(it: &Item) -> bool {
+    matches!(it.content, designcraft_doc::Content::Graphic(_)) || it.children().iter().any(|c| holds_image(c))
+}
+
+/// The frontmost visible, unlocked top-level item holding an image under canvas point `p` on a
+/// document spread.
+fn image_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::ItemId, Point)> {
+    let st = app.session.active()?;
+    let (sr, sp) = CanvasLayout::new(&st.doc, st.editing_parents).spread_at(p)?;
+    let SpreadRef::Doc(si) = sr else { return None };
+    let tol = 4.0 / zoom.max(1e-6);
+    let doc = &st.doc;
+    let mut items: Vec<_> = doc.spreads.get(si)?.items.iter().collect();
+    items.sort_by_key(|i| doc.layer_rank(i.layer));
+    items
+        .into_iter()
+        .rev()
+        .filter(|it| !it.hidden && !doc.layer(it.layer).is_some_and(|l| !l.visible || l.locked))
+        .find(|it| holds_image(it) && designcraft_doc::edit_hit(it, sp, tol))
+        .map(|it| (it.id, sp))
 }
 
 /// The frontmost item under canvas point `p` and that point in its spread, hit as the tools do.
